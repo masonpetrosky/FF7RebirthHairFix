@@ -1,9 +1,10 @@
 # FF7 Rebirth Hair Fix
 
 A [ReShade](https://reshade.me) add-on for **FINAL FANTASY VII REBIRTH** (PC) that removes the
-grainy, screen-door dithering on hair when playing with **DLSS, DLAA or FSR**.
+grainy, screen-door dithering on hair (and grass, fur and foliage) when playing with
+**DLSS, DLAA or FSR**.
 
-![Sephiroth's hair with DLSS Quality: original (left) and with the fix (right)](docs/comparison.png)
+![Sephiroth's hair and nearby grass at 4K with DLSS Quality: original on the left, with the fix on the right](docs/comparison.png)
 
 ## Why hair looks grainy
 
@@ -70,7 +71,7 @@ To bind a toggle hotkey, set `ToggleKey` in the ini to a
 
 ## Notes
 
-- It applies to every dithered masked material, so foliage and fur also lose their dither noise.
+- It applies to every material that uses this dithering, so grass, foliage and fur are cleaned up too.
 - First launch: dithered pipelines are patched in the background over the first seconds of play,
   so hair can look dithered briefly. Patched shaders are cached in
   `Win64\FF7RebirthHairFix\cache`. It's safe to delete that folder.
