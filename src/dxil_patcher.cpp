@@ -5,6 +5,8 @@
 //
 //   noise = DitherVolume.Load(int3(SvPosition.x & 127, SvPosition.y & 127, (FrameIndex & 7 + Offset) & 63))
 //
+// (materials without a per-object offset, e.g. bindless foliage, use just "FrameIndex & 7")
+//
 // and compares against thresholds built from it:
 //
 //   fade    > noise.w * 255/256 + 1/512   (LOD / camera dither fade, left alone)
@@ -228,7 +230,7 @@ bool PatchDisassembly(std::string& text, const PatchOptions& options, PatchStats
     return rhs.rfind("and i32 ", 0) == 0 && rhs.size() > mask.size() && rhs.substr(rhs.size() - mask.size()) == mask;
   };
 
-  // 1. Loads from the dither volume: Load(int3(x & 127, y & 127, z & 63)).
+  // 1. Loads from the dither volume: Load(int3(x & 127, y & 127, z & 63 or z & 7)).
   std::unordered_map<std::string, bool> noise_loads;
   constexpr std::string_view kLoadPrefix = "call %dx.types.ResRet.f32 @dx.op.textureLoad.f32(";
   for (const auto& inst : instructions) {
@@ -239,7 +241,7 @@ bool PatchDisassembly(std::string& text, const PatchOptions& options, PatchStats
     const auto args = SplitArgs(args_text);
     if (args.size() < 6) continue;
     if (is_masked_coord(LastWord(args[3]), ", 127") && is_masked_coord(LastWord(args[4]), ", 127") &&
-        is_masked_coord(LastWord(args[5]), ", 63")) {
+        (is_masked_coord(LastWord(args[5]), ", 63") || is_masked_coord(LastWord(args[5]), ", 7"))) {
       noise_loads[inst.name] = true;
     }
   }

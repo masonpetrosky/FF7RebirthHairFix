@@ -45,7 +45,7 @@ namespace fs = std::filesystem;
 using ShaderCode = std::shared_ptr<const std::vector<uint8_t>>;
 
 // Bump whenever the patcher's output changes so stale cache entries are ignored.
-constexpr int kPatcherVersion = 1;
+constexpr int kPatcherVersion = 2;
 
 constexpr float kDefaultThreshold = 0.33f;
 constexpr float kDefaultDitherStrength = 0.0f;
