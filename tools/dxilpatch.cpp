@@ -23,11 +23,11 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "usage: dxilpatch <dll dir> <input dir> <output dir> [threshold] [dither strength]\n");
     return 2;
   }
-  hairfix::PatchOptions options;
+  vegfix::PatchOptions options;
   if (argc > 4) options.threshold = static_cast<float>(std::atof(argv[4]));
   if (argc > 5) options.dither_strength = static_cast<float>(std::atof(argv[5]));
 
-  hairfix::DxilPatcher patcher;
+  vegfix::DxilPatcher patcher;
   std::string error;
   if (!patcher.Initialize(argv[1], &error)) {
     std::fprintf(stderr, "%s\n", error.c_str());
@@ -43,12 +43,12 @@ int main(int argc, char** argv) {
     std::ifstream file(entry.path(), std::ios::binary);
     const std::vector<uint8_t> code((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
 
-    hairfix::PatchStats stats;
+    vegfix::PatchStats stats;
     std::vector<uint8_t> out;
     const auto result = patcher.Patch(code.data(), code.size(), options, &out, &stats, &error);
     const std::string name = entry.path().stem().stem().string();
     switch (result) {
-      case hairfix::PatchResult::kPatched: {
+      case vegfix::PatchResult::kPatched: {
         ++patched;
         std::ofstream(output_dir / (name + ".cso"), std::ios::binary).write(reinterpret_cast<const char*>(out.data()), out.size());
         std::string text;
@@ -56,12 +56,12 @@ int main(int argc, char** argv) {
         std::printf("patched  %s opacity=%d fade=%d other=%d\n", name.c_str(), stats.opacity_tests, stats.fade_tests, stats.other_tests);
         break;
       }
-      case hairfix::PatchResult::kNotApplicable:
+      case vegfix::PatchResult::kNotApplicable:
         ++skipped;
         if (stats.fade_tests || stats.other_tests)
           std::printf("skipped  %s fade=%d other=%d\n", name.c_str(), stats.fade_tests, stats.other_tests);
         break;
-      case hairfix::PatchResult::kFailed:
+      case vegfix::PatchResult::kFailed:
         ++failed;
         std::printf("FAILED   %s: %s\n", name.c_str(), error.c_str());
         break;

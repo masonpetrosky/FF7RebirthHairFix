@@ -11,7 +11,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace hairfix {
+namespace vegfix {
 
 using Blob = std::shared_ptr<const std::vector<uint8_t>>;
 
@@ -36,6 +36,7 @@ class PipelineRecipe {
   uint32_t count() const { return static_cast<uint32_t>(subobjects_.size()); }
   const reshade::api::pipeline_subobject* data() const { return subobjects_.data(); }
   reshade::api::shader_desc* pixel_shader() { return pixel_shader_; }
+  const reshade::api::shader_desc* vertex_shader() const { return vertex_shader_; }  // null for mesh shaders
 
  private:
   reshade::api::pipeline_layout layout_ = {0};
@@ -45,6 +46,7 @@ class PipelineRecipe {
   std::deque<std::string> strings_;
   std::vector<Blob> blobs_;
   reshade::api::shader_desc* pixel_shader_ = nullptr;
+  reshade::api::shader_desc* vertex_shader_ = nullptr;
 };
 
-}  // namespace hairfix
+}  // namespace vegfix

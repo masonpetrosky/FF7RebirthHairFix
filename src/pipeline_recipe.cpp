@@ -8,7 +8,7 @@
 
 using namespace reshade::api;
 
-namespace hairfix {
+namespace vegfix {
 
 Blob BlobPool::Get(const void* data, size_t size) {
   const uint64_t key = (static_cast<uint64_t>(Crc32(data, size)) << 32) ^ size;
@@ -47,6 +47,7 @@ bool PipelineRecipe::CopyFrom(pipeline_layout layout, uint32_t count, const pipe
         if (desc.entry_point != nullptr) desc.entry_point = strings_.emplace_back(desc.entry_point).c_str();
         sub.data = &shaders_.emplace_back(desc);
         if (sub.type == pipeline_subobject_type::pixel_shader) pixel_shader_ = &shaders_.back();
+        if (sub.type == pipeline_subobject_type::vertex_shader) vertex_shader_ = &shaders_.back();
         continue;
       }
       case pipeline_subobject_type::input_layout: {
@@ -82,4 +83,4 @@ bool PipelineRecipe::CopyFrom(pipeline_layout layout, uint32_t count, const pipe
   return pixel_shader_ != nullptr;
 }
 
-}  // namespace hairfix
+}  // namespace vegfix

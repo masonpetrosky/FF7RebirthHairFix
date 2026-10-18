@@ -1,6 +1,7 @@
-// FF7 Rebirth Hair Fix
-// ReShade add-on that removes the dithered (screen-door) opacity on hair and other masked
-// materials by patching the game's pixel shaders as their pipelines are created.
+// FF7 Rebirth Vegetation Fix
+// ReShade add-on that removes the dithered (screen-door) opacity on foliage, hair and other masked
+// materials by patching the game's pixel shaders as their pipelines are created. Characters and
+// scenery have separate settings. Called FF7 Rebirth Hair Fix before 0.2.0.
 // SPDX-License-Identifier: MIT
 
 #define WIN32_LEAN_AND_MEAN
@@ -32,10 +33,10 @@
 #include "dxil_patcher.hpp"
 #include "pipeline_recipe.hpp"
 
-extern "C" __declspec(dllexport) const char* NAME = "FF7 Rebirth Hair Fix";
+extern "C" __declspec(dllexport) const char* NAME = "FF7 Rebirth Vegetation Fix";
 extern "C" __declspec(dllexport) const char* DESCRIPTION =
-    "Removes the dithered (screen-door) hair transparency in FINAL FANTASY VII REBIRTH "
-    "so DLSS, DLAA and FSR resolve hair cleanly.";
+    "Removes the dithered (screen-door) transparency of trees, grass and other foliage in FINAL FANTASY VII "
+    "REBIRTH so DLSS, DLAA and FSR resolve it cleanly. Hair can be cleaned up as well.";
 
 using namespace reshade::api;
 
@@ -47,11 +48,21 @@ using ShaderCode = std::shared_ptr<const std::vector<uint8_t>>;
 // Bump whenever the patcher's output changes so stale cache entries are ignored.
 constexpr int kPatcherVersion = 2;
 
-constexpr float kDefaultThreshold = 0.33f;
-constexpr float kDefaultDitherStrength = 0.0f;
+// Characters (Unreal's GPU-skinned meshes: hair, fur, clothing) and scenery (everything else) have
+// separate settings.
+enum Group { kCharacters, kScenery, kGroupCount };
+constexpr const char* kGroupNames[kGroupCount] = {"character", "scenery"};
+constexpr const char* kThresholdKeys[kGroupCount] = {"Threshold", "SceneryThreshold"};
+constexpr const char* kDitherKeys[kGroupCount] = {"DitherStrength", "SceneryDitherStrength"};
+// By default characters keep the game's own dithering, which DLSS preset L resolved well on hair in
+// our tests, and scenery gets a clean alpha test.
+constexpr vegfix::PatchOptions kDefaults[kGroupCount] = {{0.5f, 1.0f}, {0.33f, 0.0f}};
+
+constexpr const wchar_t* kIniSection = L"VegetationFix";
 
 struct PipelineInfo {
   uint64_t serial = 0;  // distinguishes a pipeline from a later one that reuses the same handle
+  device* dev = nullptr;
   uint32_t ps_hash = 0;
   uint32_t rt_count = 0;
   format rt_formats[8] = {};
@@ -63,34 +74,35 @@ struct PipelineInfo {
 
 struct Config {
   bool enabled = true;
-  float threshold = kDefaultThreshold;
-  float dither_strength = kDefaultDitherStrength;
+  vegfix::PatchOptions groups[kGroupCount] = {kDefaults[kCharacters], kDefaults[kScenery]};
   bool dump_shaders = false;
   int toggle_key = 0;  // virtual-key code, 0 = none
   int trace_key = 0;
 };
 
 Config g_config;  // edited by the overlay (render thread only)
-fs::path g_data_dir;  // <game>\End\Binaries\Win64\FF7RebirthHairFix
+fs::path g_data_dir;  // <game>\End\Binaries\Win64\FF7RebirthVegetationFix
 fs::path g_ini_path;
 
 std::atomic<bool> g_active{true};
+std::atomic<bool> g_old_version_loaded{false};  // FF7RebirthHairFix.addon64, the former name, is installed too
 
-// Patch options in effect. Changing them re-patches every dithered pipeline on the worker.
+// Patch options in effect, per group. Changing a group's options re-patches its dithered pipelines
+// on the worker.
 std::mutex g_options_mutex;
-hairfix::PatchOptions g_options;
-uint64_t g_options_generation = 0;
+vegfix::PatchOptions g_options[kGroupCount];
+uint64_t g_options_generation[kGroupCount] = {};
 std::atomic<int64_t> g_options_apply_at_ms{0};  // debounced slider changes
 
 // Patching.
-hairfix::DxilPatcher* g_patcher = nullptr;  // intentionally leaked: never FreeLibrary from DllMain
+vegfix::DxilPatcher* g_patcher = nullptr;  // intentionally leaked: never FreeLibrary from DllMain
 std::once_flag g_patcher_once;
 std::string g_patcher_error;
 std::atomic<bool> g_patcher_failed{false};  // set after g_patcher_error is written
 
 std::mutex g_patch_mutex;
 std::unordered_map<uint32_t, ShaderCode> g_overrides;  // loose shaders\0xHASH.cso files
-std::unordered_map<uint32_t, ShaderCode> g_patched;    // for the current options
+std::unordered_map<uint32_t, ShaderCode> g_patched[kGroupCount];  // for each group's current options
 std::unordered_set<uint32_t> g_dithered;               // shader hashes known to need patching
 std::unordered_set<uint32_t> g_unpatchable;            // not dithered, or failed to patch
 std::ofstream g_cache_index;
@@ -98,19 +110,21 @@ std::atomic<size_t> g_patch_failures{0};
 std::atomic<size_t> g_shaders_checked{0};
 
 // Pipelines.
-struct CloneSource {
+struct Source {
   device* dev;
   uint64_t serial;
   uint32_t ps_hash;
-  std::shared_ptr<hairfix::PipelineRecipe> recipe;
+  Group group;
+  std::shared_ptr<vegfix::PipelineRecipe> recipe;
   const void* original_code;  // the game's pixel shader, owned by the recipe
   size_t original_size;
 };
 std::shared_mutex g_pipeline_mutex;
-std::unordered_map<uint64_t, PipelineInfo> g_pipelines;   // every graphics pipeline with a pixel shader
-std::unordered_map<uint64_t, pipeline> g_clones;          // original pipeline -> patched clone
-std::unordered_map<uint64_t, CloneSource> g_clone_sources;  // what each clone was built from, for rebuilds
+std::unordered_map<uint64_t, PipelineInfo> g_pipelines;  // every graphics pipeline with a pixel shader
+std::unordered_map<uint64_t, Source> g_sources;          // pipelines with a dithered pixel shader, for (re)building clones
+std::unordered_map<uint64_t, pipeline> g_clones;         // original pipeline -> patched clone
 uint64_t g_next_serial = 1;
+std::atomic<size_t> g_source_count[kGroupCount];
 std::atomic<size_t> g_clone_count{0};
 std::atomic<size_t> g_clone_failures{0};
 
@@ -133,17 +147,19 @@ struct Job {
   uint64_t pipeline;
   uint64_t serial;
   uint32_t ps_hash;
-  std::shared_ptr<hairfix::PipelineRecipe> recipe;
+  std::shared_ptr<vegfix::PipelineRecipe> recipe;
   const void* original_code;
   size_t original_size;
 };
-hairfix::BlobPool g_blob_pool;
+vegfix::BlobPool g_blob_pool;
 std::mutex g_job_mutex;
 std::condition_variable g_job_cv;
 std::deque<Job> g_jobs;
 std::thread* g_worker = nullptr;
 bool g_worker_stop = false;
+device* g_job_device = nullptr;  // the device of the job the worker is on, if any
 std::atomic<size_t> g_queue_size{0};
+std::atomic<int> g_device_count{0};
 
 // The worker waits until the game has been presenting for a while, to stay out of the way of the
 // game's own shader-cache setup during boot.
@@ -172,7 +188,7 @@ int64_t NowMs() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-void Log(reshade::log::level level, const std::string& message) { reshade::log::message(level, ("[HairFix] " + message).c_str()); }
+void Log(reshade::log::level level, const std::string& message) { reshade::log::message(level, ("[VegetationFix] " + message).c_str()); }
 
 std::string HashName(uint32_t hash) {
   char buf[16];
@@ -187,7 +203,7 @@ std::wstring Widen(const char* s) { return std::wstring(s, s + strlen(s)); }
 
 std::wstring ReadIniString(const char* key, const wchar_t* fallback) {
   wchar_t buf[64];
-  GetPrivateProfileStringW(L"HairFix", Widen(key).c_str(), fallback, buf, 64, g_ini_path.c_str());
+  GetPrivateProfileStringW(kIniSection, Widen(key).c_str(), fallback, buf, 64, g_ini_path.c_str());
   return buf;
 }
 
@@ -208,7 +224,34 @@ float ReadIniFloat(const char* key, float fallback) {
 }
 
 void WriteIni(const char* key, const std::wstring& value) {
-  WritePrivateProfileStringW(L"HairFix", Widen(key).c_str(), value.c_str(), g_ini_path.c_str());
+  WritePrivateProfileStringW(kIniSection, Widen(key).c_str(), value.c_str(), g_ini_path.c_str());
+}
+
+bool HasIniKey(const char* key) { return !ReadIniString(key, L"").empty(); }
+
+// The add-on was called FF7 Rebirth Hair Fix before 0.2.0. Its settings are taken over once.
+void ImportOldSettings(const fs::path& old_ini) {
+  if (!fs::exists(old_ini) || HasIniKey("ImportedHairFixSettings")) return;
+  const auto read_old = [&old_ini](const char* key) {
+    wchar_t value[64];
+    GetPrivateProfileStringW(L"HairFix", Widen(key).c_str(), L"", value, 64, old_ini.c_str());
+    return std::wstring(value);
+  };
+  // Hair Fix 0.1.0 had no scenery settings; its one setting applied to everything.
+  const bool split = !read_old("SceneryThreshold").empty();
+  const std::pair<const char*, const char*> keys[] = {  // {new key, old key}
+      {"Enabled", "Enabled"},
+      {"Threshold", "Threshold"},
+      {"DitherStrength", "DitherStrength"},
+      {"SceneryThreshold", split ? "SceneryThreshold" : "Threshold"},
+      {"SceneryDitherStrength", split ? "SceneryDitherStrength" : "DitherStrength"},
+      {"ToggleKey", "ToggleKey"},
+      {"TraceKey", "TraceKey"},
+      {"DumpShaders", "DumpShaders"}};
+  for (const auto& [key, old_key] : keys)
+    if (const std::wstring value = read_old(old_key); !value.empty()) WriteIni(key, value);
+  WriteIni("ImportedHairFixSettings", L"1");
+  Log(reshade::log::level::info, "Took over the settings in FF7RebirthHairFix.ini (this add-on's former name).");
 }
 
 void WriteIniFloat(const char* key, float value) {
@@ -222,14 +265,17 @@ float Round2(float value) { return std::round(value * 100.0f) / 100.0f; }
 
 void LoadConfig() {
   g_config.enabled = ReadIniInt("Enabled", 1) != 0;
-  g_config.threshold = Round2(std::clamp(ReadIniFloat("Threshold", kDefaultThreshold), 0.05f, 0.95f));
-  g_config.dither_strength = Round2(std::clamp(ReadIniFloat("DitherStrength", kDefaultDitherStrength), 0.0f, 1.0f));
+  for (int group = 0; group < kGroupCount; ++group) {
+    const vegfix::PatchOptions& fallback = kDefaults[group];
+    auto& options = g_config.groups[group];
+    options.threshold = Round2(std::clamp(ReadIniFloat(kThresholdKeys[group], fallback.threshold), 0.05f, 0.95f));
+    options.dither_strength = Round2(std::clamp(ReadIniFloat(kDitherKeys[group], fallback.dither_strength), 0.0f, 1.0f));
+    g_options[group] = options;
+  }
   g_config.dump_shaders = ReadIniInt("DumpShaders", 0) != 0;
   g_config.toggle_key = ReadIniInt("ToggleKey", 0);
   g_config.trace_key = ReadIniInt("TraceKey", 0);
   g_active = g_config.enabled;
-  g_options.threshold = g_config.threshold;
-  g_options.dither_strength = g_config.dither_strength;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -258,7 +304,7 @@ void LoadOverrides() {
 // cache\v<N>\t<T>_s<S>\0x*.cso  patched shaders, per option set
 fs::path CacheRoot() { return g_data_dir / "cache" / ("v" + std::to_string(kPatcherVersion)); }
 
-fs::path OptionsCacheDir(const hairfix::PatchOptions& options) {
+fs::path OptionsCacheDir(const vegfix::PatchOptions& options) {
   char key[48];
   snprintf(key, sizeof(key), "t%.2f_s%.2f", options.threshold, options.dither_strength);
   return CacheRoot() / key;
@@ -278,7 +324,7 @@ void OpenCache() {
 }
 
 void InitPatcher() {
-  g_patcher = new hairfix::DxilPatcher();
+  g_patcher = new vegfix::DxilPatcher();
   if (!g_patcher->Initialize(g_data_dir, &g_patcher_error)) {
     Log(reshade::log::level::error, "Shader patching disabled: " + g_patcher_error);
     g_patcher_failed = true;
@@ -289,12 +335,13 @@ void InitPatcher() {
 
 // Returns the patched replacement for a pixel shader, or null if it should be left alone.
 // Worker thread only.
-ShaderCode GetPatchedShader(uint32_t hash, const void* code, size_t size, const hairfix::PatchOptions& options, uint64_t generation) {
+ShaderCode GetPatchedShader(uint32_t hash, const void* code, size_t size, Group group, const vegfix::PatchOptions& options,
+                            uint64_t generation) {
   {
     std::lock_guard lock(g_patch_mutex);
     if (auto it = g_overrides.find(hash); it != g_overrides.end()) return it->second;
     if (g_unpatchable.count(hash)) return nullptr;
-    if (auto it = g_patched.find(hash); it != g_patched.end()) return it->second;
+    if (auto it = g_patched[group].find(hash); it != g_patched[group].end()) return it->second;
   }
 
   const fs::path cache_dir = OptionsCacheDir(options);
@@ -305,17 +352,17 @@ ShaderCode GetPatchedShader(uint32_t hash, const void* code, size_t size, const 
     std::call_once(g_patcher_once, InitPatcher);
     if (!g_patcher->initialized()) return nullptr;
 
-    hairfix::PatchStats stats;
+    vegfix::PatchStats stats;
     std::vector<uint8_t> out;
     std::string error;
     ++g_shaders_checked;
     switch (g_patcher->Patch(code, size, options, &out, &stats, &error)) {
-      case hairfix::PatchResult::kPatched:
+      case vegfix::PatchResult::kPatched:
         patched = std::make_shared<std::vector<uint8_t>>(std::move(out));
         break;
-      case hairfix::PatchResult::kNotApplicable:
+      case vegfix::PatchResult::kNotApplicable:
         break;
-      case hairfix::PatchResult::kFailed:
+      case vegfix::PatchResult::kFailed:
         ++g_patch_failures;
         Log(reshade::log::level::warning, "Could not patch pixel shader " + HashName(hash) + ": " + error);
         break;
@@ -337,10 +384,19 @@ ShaderCode GetPatchedShader(uint32_t hash, const void* code, size_t size, const 
   bool current = false;
   {
     std::lock_guard options_lock(g_options_mutex);
-    current = generation == g_options_generation;
+    current = generation == g_options_generation[group];
   }
-  if (current) g_patched.emplace(hash, patched);
+  if (current) g_patched[group].emplace(hash, patched);
   return patched;
+}
+
+// Characters are drawn with Unreal's GPU-skinned vertex factories, whose vertex shaders read the
+// BoneMatrices buffer. Everything else is scenery: Square Enix's mesh-shader environment renderer
+// (trees, rocks, buildings), static props and particles.
+Group Classify(const vegfix::PipelineRecipe& recipe) {
+  const shader_desc* vs = recipe.vertex_shader();
+  if (vs != nullptr && vs->code != nullptr && vegfix::ContainsName(vs->code, vs->code_size, "BoneMatrices")) return kCharacters;
+  return kScenery;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -417,17 +473,19 @@ void WriteTrace() {
     PipelineInfo info;
     bool known;
     bool cloned;
+    const char* group;
   };
   std::vector<Row> rows;
   {
     std::lock_guard trace_lock(g_trace_mutex);
     std::shared_lock pipeline_lock(g_pipeline_mutex);
     for (const auto& [handle, entry] : g_trace_entries) {
-      Row row{entry.first_seq, entry.draws, {}, false, g_clones.count(handle) != 0};
+      Row row{entry.first_seq, entry.draws, {}, false, g_clones.count(handle) != 0, "-"};
       if (auto it = g_pipelines.find(handle); it != g_pipelines.end()) {
         row.info = it->second;
         row.known = true;
       }
+      if (auto it = g_sources.find(handle); it != g_sources.end()) row.group = kGroupNames[it->second.group];
       rows.push_back(row);
     }
     g_trace_entries.clear();
@@ -444,10 +502,11 @@ void WriteTrace() {
   char name[64];
   snprintf(name, sizeof(name), "trace_%04d%02d%02d_%02d%02d%02d.csv", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
   std::ofstream out(dir / name);
-  out << "order,ps_hash,draws,rts,ds_format,depth_test,depth_write,blend0,patched\n";
+  out << "order,ps_hash,draws,rts,ds_format,depth_test,depth_write,blend0,patched,group\n";
   for (const auto& row : rows) {
     out << row.seq << "," << (row.known ? HashName(row.info.ps_hash) : std::string("none")) << "," << row.draws << ","
-        << (row.known ? DescribePipeline(row.info) : std::string("?,?,?,?,?")) << "," << (row.cloned ? 1 : 0) << "\n";
+        << (row.known ? DescribePipeline(row.info) : std::string("?,?,?,?,?")) << "," << (row.cloned ? 1 : 0) << "," << row.group
+        << "\n";
   }
   g_last_trace_file = name;
   Log(reshade::log::level::info, "Wrote draw trace " + (dir / name).string());
@@ -461,13 +520,15 @@ void RetirePipeline(device* dev, pipeline handle) {
   g_retired.push_back({dev, handle, g_frame.load()});
 }
 
-void DestroyRetiredPipelines(bool all) {
+// Destroys the retired clones old enough to be out of use, or all of them; of every device, or only of `only`.
+void DestroyRetiredPipelines(bool all, device* only = nullptr) {
   std::vector<RetiredPipeline> expired;
   {
     std::lock_guard lock(g_retired_mutex);
     const uint64_t frame = g_frame.load();
-    auto keep = std::partition(g_retired.begin(), g_retired.end(),
-                               [&](const RetiredPipeline& r) { return !all && frame < r.frame + kRetireFrames; });
+    auto keep = std::partition(g_retired.begin(), g_retired.end(), [&](const RetiredPipeline& r) {
+      return (only != nullptr && r.dev != only) || (!all && frame < r.frame + kRetireFrames);
+    });
     expired.assign(keep, g_retired.end());
     g_retired.erase(keep, g_retired.end());
   }
@@ -490,24 +551,28 @@ void ProcessJob(Job& job) {
     if (it == g_pipelines.end() || it->second.serial != job.serial) return;
   }
 
-  hairfix::PatchOptions options;
+  const Group group = Classify(*job.recipe);
+  vegfix::PatchOptions options;
   uint64_t generation;
   {
     std::lock_guard lock(g_options_mutex);
-    options = g_options;
-    generation = g_options_generation;
+    options = g_options[group];
+    generation = g_options_generation[group];
   }
-  ShaderCode replacement = GetPatchedShader(job.ps_hash, job.original_code, job.original_size, options, generation);
+  ShaderCode replacement = GetPatchedShader(job.ps_hash, job.original_code, job.original_size, group, options, generation);
   if (replacement == nullptr) return;
 
-  shader_desc* ps = job.recipe->pixel_shader();
-  ps->code = replacement->data();
-  ps->code_size = replacement->size();
+  // With the game's own test the original pipeline stays bound; the source is kept for other settings.
   pipeline clone = {0};
-  if (!job.dev->create_pipeline(job.recipe->layout(), job.recipe->count(), job.recipe->data(), &clone)) {
-    ++g_clone_failures;
-    Log(reshade::log::level::warning, "Failed to create patched pipeline for pixel shader " + HashName(job.ps_hash));
-    return;
+  if (!options.original()) {
+    shader_desc* ps = job.recipe->pixel_shader();
+    ps->code = replacement->data();
+    ps->code_size = replacement->size();
+    if (!job.dev->create_pipeline(job.recipe->layout(), job.recipe->count(), job.recipe->data(), &clone)) {
+      ++g_clone_failures;
+      Log(reshade::log::level::warning, "Failed to create patched pipeline for pixel shader " + HashName(job.ps_hash));
+      return;
+    }
   }
 
   pipeline previous = {0};
@@ -516,15 +581,27 @@ void ProcessJob(Job& job) {
     auto it = g_pipelines.find(job.pipeline);
     if (it == g_pipelines.end() || it->second.serial != job.serial) {
       lock.unlock();
-      job.dev->destroy_pipeline(clone);  // the original went away while we were compiling; never bound
+      if (clone.handle != 0) job.dev->destroy_pipeline(clone);  // the original went away while we were compiling; never bound
       return;
     }
     if (auto existing = g_clones.find(job.pipeline); existing != g_clones.end()) previous = existing->second;
-    g_clones[job.pipeline] = clone;
-    g_clone_sources[job.pipeline] = {job.dev, job.serial, job.ps_hash, job.recipe, job.original_code, job.original_size};
+    if (clone.handle != 0)
+      g_clones[job.pipeline] = clone;
+    else
+      g_clones.erase(job.pipeline);
     g_clone_count = g_clones.size();
+    const Source source = {job.dev, job.serial, job.ps_hash, group, job.recipe, job.original_code, job.original_size};
+    if (g_sources.insert_or_assign(job.pipeline, source).second) ++g_source_count[group];
   }
   if (previous.handle != 0) RetirePipeline(job.dev, previous);
+
+  // A settings change while this job ran may have queued its rebuilds before this pipeline was a source.
+  bool stale = false;
+  {
+    std::lock_guard lock(g_options_mutex);
+    stale = generation != g_options_generation[group];
+  }
+  if (stale) EnqueueJob(job);
 }
 
 void WorkerMain() {
@@ -533,7 +610,18 @@ void WorkerMain() {
   GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<LPCWSTR>(&WorkerMain), &self);
   Log(reshade::log::level::info, "Worker thread started.");
   size_t processed = 0;
+  size_t reported = 0;
+  int64_t reported_ms = 0;
   for (;;) {
+    // Once the queue has run dry, at most every 30 seconds.
+    if (processed != reported && g_queue_size == 0 && NowMs() - reported_ms >= 30000) {
+      reported = processed;
+      reported_ms = NowMs();
+      Log(reshade::log::level::info, std::to_string(processed) + " pipelines processed: " +
+                                         std::to_string(g_source_count[kCharacters].load()) + " character and " +
+                                         std::to_string(g_source_count[kScenery].load()) + " scenery pipelines dithered, " +
+                                         std::to_string(g_clone_count.load()) + " patched pipelines live.");
+    }
     Job job;
     {
       std::unique_lock lock(g_job_mutex);
@@ -544,12 +632,15 @@ void WorkerMain() {
       job = std::move(g_jobs.front());
       g_jobs.pop_front();
       g_queue_size = g_jobs.size();
+      g_job_device = job.dev;
     }
     ProcessJob(job);
-    if (++processed % 1000 == 0) {
-      Log(reshade::log::level::info,
-          std::to_string(processed) + " pipelines processed, " + std::to_string(g_clone_count.load()) + " patched pipelines live.");
+    {
+      std::lock_guard lock(g_job_mutex);
+      g_job_device = nullptr;
     }
+    g_job_cv.notify_all();  // ForgetDevice may be waiting for this job
+    ++processed;
   }
   Log(reshade::log::level::info, "Worker thread stopped.");
   FreeLibraryAndExitThread(self, 0);
@@ -579,27 +670,29 @@ void StopWorker() {
   }
 }
 
-// Switches to new patch options and rebuilds every patched pipeline with them.
-void ApplyOptions(const hairfix::PatchOptions& options) {
+// Switches a group to new patch options and rebuilds its dithered pipelines with them.
+void ApplyOptions(Group group, const vegfix::PatchOptions& options) {
   {
     std::lock_guard lock(g_options_mutex);
-    if (options.threshold == g_options.threshold && options.dither_strength == g_options.dither_strength) return;
-    g_options = options;
-    ++g_options_generation;
+    if (options == g_options[group]) return;
+    g_options[group] = options;
+    ++g_options_generation[group];
   }
   {
     std::lock_guard lock(g_patch_mutex);
-    g_patched.clear();
+    g_patched[group].clear();
   }
   std::vector<Job> jobs;
   {
     std::shared_lock lock(g_pipeline_mutex);
-    for (const auto& [handle, source] : g_clone_sources) {
+    for (const auto& [handle, source] : g_sources) {
+      if (source.group != group) continue;
       jobs.push_back({source.dev, handle, source.serial, source.ps_hash, source.recipe, source.original_code, source.original_size});
     }
   }
   for (auto& job : jobs) EnqueueJob(std::move(job));
-  Log(reshade::log::level::info, "Rebuilding " + std::to_string(jobs.size()) + " patched pipelines with new settings.");
+  Log(reshade::log::level::info,
+      "Rebuilding " + std::to_string(jobs.size()) + " " + kGroupNames[group] + " pipelines with new settings.");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -637,7 +730,8 @@ void OnInitPipeline(device* device, pipeline_layout layout, uint32_t subobject_c
   }
   if (ps == nullptr || ps->code == nullptr || ps->code_size == 0) return;
 
-  info.ps_hash = hairfix::Crc32(ps->code, ps->code_size);
+  info.ps_hash = vegfix::Crc32(ps->code, ps->code_size);
+  info.dev = device;
   if (g_config.dump_shaders) DumpShader(info.ps_hash, *ps, info);
   {
     std::unique_lock lock(g_pipeline_mutex);
@@ -651,7 +745,7 @@ void OnInitPipeline(device* device, pipeline_layout layout, uint32_t subobject_c
 
   // Pipelines that come out of an ID3D12PipelineLibrary cannot be modified in create_pipeline,
   // so every patched pipeline is a clone, built on the worker and bound in place of the original.
-  auto recipe = std::make_shared<hairfix::PipelineRecipe>();
+  auto recipe = std::make_shared<vegfix::PipelineRecipe>();
   if (!recipe->CopyFrom(layout, subobject_count, subobjects, g_blob_pool)) return;
   const shader_desc* copied_ps = recipe->pixel_shader();
   EnqueueJob({device, pipeline.handle, info.serial, info.ps_hash, recipe, copied_ps->code, copied_ps->code_size});
@@ -663,7 +757,10 @@ void OnDestroyPipeline(device* device, pipeline pipeline) {
   {
     std::unique_lock lock(g_pipeline_mutex);
     g_pipelines.erase(pipeline.handle);
-    g_clone_sources.erase(pipeline.handle);
+    if (auto it = g_sources.find(pipeline.handle); it != g_sources.end()) {
+      --g_source_count[it->second.group];
+      g_sources.erase(it);
+    }
     if (auto it = g_clones.find(pipeline.handle); it != g_clones.end()) {
       clone = it->second;
       g_clones.erase(it);
@@ -706,17 +803,65 @@ bool OnDrawIndirect(command_list* cmd_list, indirect_command type, resource, uin
   return false;
 }
 
-void OnInitDevice(device*) { StartWorker(); }
+void OnInitDevice(device*) {
+  ++g_device_count;
+  // Both add-ons would patch the same shaders.
+  if (GetModuleHandleW(L"FF7RebirthHairFix.addon64") != nullptr && !g_old_version_loaded.exchange(true))
+    Log(reshade::log::level::warning,
+        "FF7RebirthHairFix.addon64, this add-on's former name, is installed too. Delete it, FF7RebirthHairFix.ini and the "
+        "FF7RebirthHairFix folder.");
+  StartWorker();
+}
+
+// Forgets the pipelines of a device that goes away while others stay, and destroys its clones.
+void ForgetDevice(device* device) {
+  std::vector<reshade::api::pipeline> clones;
+  {
+    std::unique_lock lock(g_pipeline_mutex);
+    std::erase_if(g_pipelines, [device](const auto& entry) { return entry.second.dev == device; });
+    for (auto it = g_sources.begin(); it != g_sources.end();) {
+      if (it->second.dev != device) {
+        ++it;
+        continue;
+      }
+      if (auto clone = g_clones.find(it->first); clone != g_clones.end()) {
+        clones.push_back(clone->second);
+        g_clones.erase(clone);
+      }
+      --g_source_count[it->second.group];
+      it = g_sources.erase(it);
+    }
+    g_clone_count = g_clones.size();
+  }
+  // Its queued jobs would now fail their pipeline check anyway. Drop them, and wait for the job in progress, which
+  // may be using the device.
+  {
+    std::unique_lock lock(g_job_mutex);
+    std::erase_if(g_jobs, [device](const Job& job) { return job.dev == device; });
+    g_queue_size = g_jobs.size();
+    g_job_cv.wait(lock, [device] { return g_job_device != device; });
+  }
+  for (auto clone : clones) device->destroy_pipeline(clone);
+  DestroyRetiredPipelines(true, device);
+}
 
 void OnDestroyDevice(device* device) {
+  // Shader Injector, for one, opens and closes a device of its own while the game's is alive. With one GPU that is
+  // the game's device again, but on a PC with two it can be a separate device, which must not take the game's
+  // pipelines with it.
+  if (--g_device_count > 0) {
+    ForgetDevice(device);
+    return;
+  }
   StopWorker();
   std::vector<reshade::api::pipeline> clones;
   {
     std::unique_lock lock(g_pipeline_mutex);
     for (const auto& [original, clone] : g_clones) clones.push_back(clone);
     g_clones.clear();
-    g_clone_sources.clear();
+    g_sources.clear();
     g_pipelines.clear();
+    for (auto& count : g_source_count) count = 0;
     g_clone_count = 0;
   }
   for (auto clone : clones) device->destroy_pipeline(clone);
@@ -742,7 +887,7 @@ void OnPresent(command_queue*, swapchain*, const rect*, const rect*, uint32_t, c
   const int64_t apply_at = g_options_apply_at_ms.load();
   if (apply_at != 0 && NowMs() >= apply_at) {
     g_options_apply_at_ms = 0;
-    ApplyOptions({g_config.threshold, g_config.dither_strength});
+    for (int group = 0; group < kGroupCount; ++group) ApplyOptions(static_cast<Group>(group), g_config.groups[group]);
   }
   DestroyRetiredPipelines(false);
 
@@ -760,31 +905,54 @@ void OnPresent(command_queue*, swapchain*, const rect*, const rect*, uint32_t, c
 }
 
 void OnSettingsChanged() {
-  g_config.threshold = Round2(g_config.threshold);
-  g_config.dither_strength = Round2(g_config.dither_strength);
-  WriteIniFloat("Threshold", g_config.threshold);
-  WriteIniFloat("DitherStrength", g_config.dither_strength);
+  for (int group = 0; group < kGroupCount; ++group) {
+    auto& options = g_config.groups[group];
+    options.threshold = Round2(options.threshold);
+    options.dither_strength = Round2(options.dither_strength);
+    WriteIniFloat(kThresholdKeys[group], options.threshold);
+    WriteIniFloat(kDitherKeys[group], options.dither_strength);
+  }
   g_options_apply_at_ms = NowMs() + 300;
 }
 
 void OnOverlay(effect_runtime*) {
+  if (g_old_version_loaded)
+    ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "Delete FF7RebirthHairFix.addon64 (this add-on's former name) and restart.");
   bool active = g_active;
-  if (ImGui::Checkbox("Remove hair dithering", &active)) {
+  if (ImGui::Checkbox("Enabled", &active)) {
     g_active = active;
     g_config.enabled = active;
     WriteIni("Enabled", active ? L"1" : L"0");
   }
-  ImGui::SetItemTooltip("Switches between the patched and the original shaders instantly.");
+  ImGui::SetItemTooltip("Switches between these settings and the game's original shaders instantly.");
 
+  static constexpr const char* kHeadings[kGroupCount] = {"Characters: hair, fur, clothing",
+                                                         "Scenery: trees, plants, grass and everything else"};
+  bool changed = false;
+  for (int group : {kScenery, kCharacters}) {
+    auto& options = g_config.groups[group];
+    ImGui::PushID(group);
+    ImGui::SeparatorText(kHeadings[group]);
+    changed |= ImGui::SliderFloat("Opacity threshold", &options.threshold, 0.05f, 0.95f, "%.2f");
+    ImGui::SetItemTooltip("Pixels more opaque than this are drawn.\nLower = fuller hair and leaves, higher = thinner. Default %.2f.",
+                          kDefaults[group].threshold);
+    changed |= ImGui::SliderFloat("Dither strength", &options.dither_strength, 0.0f, 1.0f, "%.2f");
+    ImGui::SetItemTooltip("0 = no dithering (clean alpha test). 1 = the game's original dithering. Default %.2f.",
+                          kDefaults[group].dither_strength);
+    ImGui::BeginDisabled(options.original());
+    if (ImGui::Button("Game's dithering")) {
+      options = {0.5f, 1.0f};
+      changed = true;
+    }
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("Threshold 0.50 with dither strength 1.00 is the game's own test; these shaders are then left alone.");
+    ImGui::SameLine();
+    ImGui::TextDisabled("%zu dithered pipelines", g_source_count[group].load());
+    ImGui::PopID();
+  }
   ImGui::Spacing();
-  bool changed = ImGui::SliderFloat("Opacity threshold", &g_config.threshold, 0.05f, 0.95f, "%.2f");
-  ImGui::SetItemTooltip("Hair-card pixels more opaque than this are drawn.\nLower = fuller hair, higher = thinner strands. Default %.2f.",
-                        kDefaultThreshold);
-  changed |= ImGui::SliderFloat("Dither strength", &g_config.dither_strength, 0.0f, 1.0f, "%.2f");
-  ImGui::SetItemTooltip("0 = no dithering (clean alpha test). 1 = the game's original dithering. Default %.2f.", kDefaultDitherStrength);
   if (ImGui::Button("Reset to defaults")) {
-    g_config.threshold = kDefaultThreshold;
-    g_config.dither_strength = kDefaultDitherStrength;
+    for (int group = 0; group < kGroupCount; ++group) g_config.groups[group] = kDefaults[group];
     changed = true;
   }
   if (changed) OnSettingsChanged();
@@ -818,14 +986,19 @@ void OnOverlay(effect_runtime*) {
 void Initialize(HMODULE module) {
   wchar_t path[MAX_PATH];
   GetModuleFileNameW(module, path, MAX_PATH);
-  g_data_dir = fs::path(path).parent_path() / "FF7RebirthHairFix";
-  g_ini_path = fs::path(path).parent_path() / "FF7RebirthHairFix.ini";
+  const fs::path dir = fs::path(path).parent_path();
+  g_data_dir = dir / "FF7RebirthVegetationFix";
+  g_ini_path = dir / "FF7RebirthVegetationFix.ini";
+  ImportOldSettings(dir / "FF7RebirthHairFix.ini");
   LoadConfig();
   LoadOverrides();
   OpenCache();
-  char summary[160];
-  snprintf(summary, sizeof(summary), "Threshold %.2f, dither strength %.2f, %zu cached non-dithered shaders, %zu loose overrides.",
-           g_options.threshold, g_options.dither_strength, g_unpatchable.size(), g_overrides.size());
+  char summary[256];
+  snprintf(summary, sizeof(summary),
+           "Scenery: threshold %.2f, dither strength %.2f. Characters: threshold %.2f, dither strength %.2f. "
+           "%zu cached non-dithered shaders, %zu loose overrides.",
+           g_options[kScenery].threshold, g_options[kScenery].dither_strength, g_options[kCharacters].threshold,
+           g_options[kCharacters].dither_strength, g_unpatchable.size(), g_overrides.size());
   Log(reshade::log::level::info, summary);
 }
 

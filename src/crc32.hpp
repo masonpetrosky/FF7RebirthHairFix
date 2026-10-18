@@ -5,7 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace hairfix {
+namespace vegfix {
 
 // Standard CRC-32 (zlib polynomial), the same hash RenoDX uses to name shaders,
 // so hashes printed by this add-on can be cross-referenced with RenoDX dumps.
@@ -26,4 +26,4 @@ inline uint32_t Crc32(const void* data, size_t size) {
   return crc ^ 0xFFFFFFFFu;
 }
 
-}  // namespace hairfix
+}  // namespace vegfix

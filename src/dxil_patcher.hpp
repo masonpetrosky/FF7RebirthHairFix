@@ -5,9 +5,10 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
-namespace hairfix {
+namespace vegfix {
 
 // How the dithered opacity test is rewritten.
 //   new_threshold = threshold + (noise - 0.5) * dither_strength
@@ -16,7 +17,15 @@ namespace hairfix {
 struct PatchOptions {
   float threshold = 0.5f;
   float dither_strength = 0.0f;
+
+  bool operator==(const PatchOptions&) const = default;
+  // The game's own test, which a patch would leave unchanged.
+  bool original() const { return threshold == 0.5f && dither_strength == 1.0f; }
 };
+
+// True if a DXIL container holds `name` as a bitcode string, such as a resource name in its reflection
+// data (the STAT part).
+bool ContainsName(const void* code, size_t size, std::string_view name);
 
 struct PatchStats {
   int opacity_tests = 0;  // dithered opacity-mask comparisons that were rewritten
@@ -58,4 +67,4 @@ class DxilPatcher {
   CreateInstanceProc create_validator_ = nullptr;
 };
 
-}  // namespace hairfix
+}  // namespace vegfix

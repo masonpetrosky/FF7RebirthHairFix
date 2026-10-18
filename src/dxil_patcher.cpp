@@ -35,6 +35,7 @@
 
 #include "DxilHash.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -43,7 +44,7 @@
 
 using Microsoft::WRL::ComPtr;
 
-namespace hairfix {
+namespace vegfix {
 
 namespace {
 
@@ -177,6 +178,28 @@ std::string ResultErrors(IDxcOperationResult* result) {
 }
 
 }  // namespace
+
+bool ContainsName(const void* code, size_t size, std::string_view name) {
+  // LLVM bitcode writes a string's characters as 8-bit fields starting at any bit, least significant bit
+  // first. Starting at bit `shift` of byte q, a name of n characters fills the high bits of byte q, all of
+  // bytes q+1 .. q+n-1 and, for a non-zero shift, the low bits of byte q+n.
+  const auto* data = static_cast<const uint8_t*>(code);
+  const auto* text = reinterpret_cast<const uint8_t*>(name.data());
+  const size_t n = name.size();
+  if (n < 2 || size <= n) return false;
+  std::vector<uint8_t> middle(n - 1);
+  for (int shift = 0; shift < 8; ++shift) {
+    for (size_t k = 1; k < n; ++k)
+      middle[k - 1] = static_cast<uint8_t>(text[k] << shift | (shift != 0 ? text[k - 1] >> (8 - shift) : 0));
+    const int first = text[0] & (0xFF >> shift);
+    const int last = shift != 0 ? text[n - 1] >> (8 - shift) : 0;
+    const uint8_t* end = data + size - (shift != 0 ? 1 : 0);
+    for (const uint8_t* p = data + 1; (p = std::search(p, end, middle.begin(), middle.end())) != end; ++p) {
+      if ((p[-1] >> shift) == first && (shift == 0 || (p[n - 1] & ((1 << shift) - 1)) == last)) return true;
+    }
+  }
+  return false;
+}
 
 bool PatchDisassembly(std::string& text, const PatchOptions& options, PatchStats* stats) {
   PatchStats local_stats;
@@ -436,4 +459,4 @@ PatchResult DxilPatcher::Patch(const void* code, size_t size, const PatchOptions
   return PatchResult::kPatched;
 }
 
-}  // namespace hairfix
+}  // namespace vegfix
