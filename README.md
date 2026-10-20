@@ -115,10 +115,12 @@ for example with FSR or other DLSS presets, set Characters to threshold 0.33 and
 - First launch: dithered pipelines are patched in the background over the first seconds of play,
   so foliage can look dithered briefly. Patched shaders are cached in
   `Win64\FF7RebirthVegetationFix\cache`. It's safe to delete that folder.
-- Tested with game build 23447986 (Steam, October 2026), ReShade 6.8.0 and DLSS 310.3 on an
-  RTX 5070 Ti, together with RenoDX HDR, Shader Injector 2.2.1 and the
+- Tested with game version 1.005 (Steam build 23447986, October 2026), ReShade 6.8.0 and DLSS
+  310.3 on an RTX 5070 Ti, together with RenoDX HDR, Shader Injector 2.2.1 and the
   [NPC Motion](https://github.com/masonpetrosky/FF7RebirthNpcMotion) and
   [Anisotropic Filtering](https://github.com/masonpetrosky/FF7RebirthAnisotropic) add-ons.
+- Game version 1.004 should work too, since the add-on doesn't patch the game's executable, but
+  it's untested.
 
 ## Uninstall
 
