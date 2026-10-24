@@ -1,6 +1,6 @@
 # Third-party notices
 
-FF7 Rebirth Vegetation Fix is MIT licensed (see `LICENSE`). It includes or redistributes the following
+FF7 Rebirth Vegetation and Hair Fix is MIT licensed (see `LICENSE`). It includes or redistributes the following
 third-party components.
 
 ## ReShade add-on headers
@@ -22,7 +22,7 @@ ReShade itself is not redistributed; users install it separately.
 - Release packages include `dxcompiler.dll` from the official
   [DirectX Shader Compiler v1.9.2609 release](https://github.com/microsoft/DirectXShaderCompiler/releases/tag/v1.9.2609),
   distributed under the LLVM Release License (University of Illinois/NCSA) and the MIT License,
-  included in the package as `FF7RebirthVegetationFix/licenses/dxcompiler-LICENSE-LLVM.txt` and
+  included in the package as `FF7RebirthVegetationAndHairFix/licenses/dxcompiler-LICENSE-LLVM.txt` and
   `dxcompiler-LICENSE-MIT.txt`.
 
 The DXIL validator (`dxil.dll`) is **not** redistributed. If a user places it next to

@@ -4,6 +4,7 @@
 #include <reshade.hpp>
 
 #include <cstdint>
+#include <cstring>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -37,6 +38,27 @@ class PipelineRecipe {
   const reshade::api::pipeline_subobject* data() const { return subobjects_.data(); }
   reshade::api::shader_desc* pixel_shader() { return pixel_shader_; }
   const reshade::api::shader_desc* vertex_shader() const { return vertex_shader_; }  // null for mesh shaders
+
+  // Replaces (or adds) a fixed-size subobject with a copy of `count` elements of T.
+  template <typename T>
+  void Set(reshade::api::pipeline_subobject_type type, const T* data, uint32_t count) {
+    auto& bytes = pods_.emplace_back(sizeof(T) * count);
+    std::memcpy(bytes.data(), data, bytes.size());
+    for (auto& sub : subobjects_) {
+      if (sub.type != type) continue;
+      sub.count = count;
+      sub.data = bytes.data();
+      return;
+    }
+    subobjects_.push_back({type, count, bytes.data()});
+  }
+  // The first subobject of a type, or null.
+  template <typename T>
+  const T* Get(reshade::api::pipeline_subobject_type type) const {
+    for (const auto& sub : subobjects_)
+      if (sub.type == type && sub.data != nullptr && sub.count != 0) return static_cast<const T*>(sub.data);
+    return nullptr;
+  }
 
  private:
   reshade::api::pipeline_layout layout_ = {0};

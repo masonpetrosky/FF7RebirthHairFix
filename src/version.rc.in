@@ -13,12 +13,12 @@ BEGIN
   BEGIN
     BLOCK "040904B0"
     BEGIN
-      VALUE "FileDescription", "FF7 Rebirth Vegetation Fix (ReShade add-on)"
+      VALUE "FileDescription", "FF7 Rebirth Vegetation and Hair Fix (ReShade add-on)"
       VALUE "FileVersion", "@PROJECT_VERSION@"
-      VALUE "InternalName", "FF7RebirthVegetationFix"
+      VALUE "InternalName", "FF7RebirthVegetationAndHairFix"
       VALUE "LegalCopyright", "MIT License"
-      VALUE "OriginalFilename", "FF7RebirthVegetationFix.addon64"
-      VALUE "ProductName", "FF7 Rebirth Vegetation Fix"
+      VALUE "OriginalFilename", "FF7RebirthVegetationAndHairFix.addon64"
+      VALUE "ProductName", "FF7 Rebirth Vegetation and Hair Fix"
       VALUE "ProductVersion", "@PROJECT_VERSION@"
     END
   END

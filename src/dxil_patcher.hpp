@@ -38,6 +38,27 @@ enum class PatchResult { kNotApplicable, kPatched, kFailed };
 // Rewrites the disassembly of a pixel shader in place. Returns true if anything was patched.
 bool PatchDisassembly(std::string& text, const PatchOptions& options, PatchStats* stats);
 
+// Soft edges: the game's passes draw the solid core of a dithered material as a plain alpha test at
+// `core_threshold`, and a fringe pass draws the same geometry once more with a variant of its G-buffer pixel
+// shader. That variant keeps every fragment more opaque than `fade_from` (and the game's dithered fade) and writes
+// four targets (their blend states are in the add-on):
+//   SV_Target0  x = 1 for a core fragment      y = depth of a fringe fragment
+//               z = depth of a core fragment   w = fringe opacity: the texture's opacity, faded in from fade_from
+//                                                and meeting the core at 1 just below core_threshold
+//   SV_Target1  the core's base colour, w = 1 for a core fragment
+//   SV_Target2  fringe base colour times fringe opacity, w = fringe opacity
+//   SV_Target3  1 for a fringe fragment
+struct FringeOptions {
+  float core_threshold = 0.5f;
+  float fade_from = 0.25f;
+
+  bool operator==(const FringeOptions&) const = default;
+};
+
+// Turns the disassembly of a dithered G-buffer pixel shader into its fringe variant. Returns false (with the
+// reason) if the shader does not have the expected shape.
+bool MakeFringeDisassembly(std::string& text, const FringeOptions& options, std::string* reason);
+
 // Disassembles, patches, reassembles and signs DXIL using dxcompiler.dll. If dxil.dll is present
 // next to it, every patched shader is additionally checked by the official validator.
 class DxilPatcher {
@@ -57,6 +78,9 @@ class DxilPatcher {
 
   PatchResult Patch(const void* code, size_t size, const PatchOptions& options, std::vector<uint8_t>* patched,
                     PatchStats* stats, std::string* error) const;
+  // The fringe variant of a dithered G-buffer pixel shader (see FringeOptions).
+  PatchResult MakeFringe(const void* code, size_t size, const FringeOptions& options, std::vector<uint8_t>* fringe,
+                         std::string* error) const;
 
  private:
   using CreateInstanceProc = long(__stdcall*)(const void* clsid, const void* iid, void** object);

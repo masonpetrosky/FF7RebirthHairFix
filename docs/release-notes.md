@@ -1,10 +1,9 @@
-Removes the grainy, screen-door dithering on trees, grass and other foliage in FINAL FANTASY VII REBIRTH when using DLSS, DLAA or FSR. Hair can be cleaned up as well.
+Removes the grainy, screen-door dithering on trees, grass and other foliage in FINAL FANTASY VII REBIRTH when using DLSS, DLAA or FSR, and gives hair and fur soft edges.
 
-**New in 0.2.0:**
-- New name: **FF7 Rebirth Vegetation Fix**, formerly FF7 Rebirth Hair Fix.
-- Characters (hair, fur, clothing) and scenery (trees, plants, grass and everything else) have separate settings. By default scenery gets the clean alpha test and characters keep the game's soft dithering, which DLSS preset L resolved well on hair in our tests. If hair looks grainy (with FSR or other DLSS presets), set Characters to 0.33 / 0.00.
-- Fixed: on a PC with two GPUs, a Direct3D device that another mod opens and closes on the other GPU (Shader Injector does this at startup) no longer resets the fix.
+**New in 0.3.0:**
+- **Soft edges for hair and fur** (on by default). The solid part of the hair is drawn cleanly, and the thin, see-through strand tips are blended over the scene, lit like the nearby solid hair, instead of being dithered or cut away. No grain, no chunky cutout. Overlapping layers cover as much as the strongest of them, like the game's own dithering, so hair keeps its depth. Settings: **Solid above** (the threshold) and **Edge softness**; `SoftEdgesKey` toggles them for comparison.
+- New name: **FF7 Rebirth Vegetation and Hair Fix**, formerly FF7 Rebirth Vegetation Fix (and Hair Fix before that). The files are now `FF7RebirthVegetationAndHairFix.*`.
 
-**Upgrading from Hair Fix 0.1.0:** extract the zip, delete `FF7RebirthHairFix.addon64` and the `FF7RebirthHairFix` folder, and start the game once. Your settings carry over from `FF7RebirthHairFix.ini` to both groups, so nothing changes until you change it. After that you can delete `FF7RebirthHairFix.ini` too.
+**Upgrading from Vegetation Fix 0.2.0 or Hair Fix 0.1.0:** extract the zip, delete the old `FF7RebirthVegetationFix.addon64` and `FF7RebirthVegetationFix` folder (or the `FF7RebirthHairFix` ones), and start the game once. Your settings carry over from the old ini; after that you can delete it too.
 
 **Requires ReShade 6.x with add-on support.** Extract the zip into `...\FINAL FANTASY VII REBIRTH\End\Binaries\Win64`. See the README for details and settings.

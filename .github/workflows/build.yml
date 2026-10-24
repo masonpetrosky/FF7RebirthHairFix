@@ -25,7 +25,7 @@ jobs:
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: FF7RebirthVegetationFix
+          name: FF7RebirthVegetationAndHairFix
           path: dist/*.zip
 
       - name: Publish release

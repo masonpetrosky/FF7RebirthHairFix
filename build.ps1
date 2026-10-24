@@ -1,4 +1,4 @@
-# Builds FF7RebirthVegetationFix.addon64 with the newest installed Visual Studio (x64, Release).
+# Builds FF7RebirthVegetationAndHairFix.addon64 with the newest installed Visual Studio (x64, Release).
 param([string]$Config = 'Release')
 $ErrorActionPreference = 'Stop'
 
@@ -17,7 +17,7 @@ try {
   if ($LASTEXITCODE) { throw 'CMake configure failed.' }
   cmake --build build
   if ($LASTEXITCODE) { throw 'Build failed.' }
-  Get-Item build\FF7RebirthVegetationFix.addon64
+  Get-Item build\FF7RebirthVegetationAndHairFix.addon64
 } finally {
   Pop-Location
 }
