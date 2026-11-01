@@ -1,3 +1,7 @@
+> **This mod has moved to [FF7RebirthMods](https://github.com/masonpetrosky/FF7RebirthMods/tree/main/VegetationAndHairFix)**, one repository for all
+> of our FINAL FANTASY VII REBIRTH mods. This repository is archived; its releases stay here. New versions are released
+> there and on Nexus Mods.
+
 # FF7 Rebirth Vegetation and Hair Fix
 
 A [ReShade](https://reshade.me) add-on for **FINAL FANTASY VII REBIRTH** (PC) that removes the
